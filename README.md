@@ -27,8 +27,8 @@ Maya is an autonomous agent for Android and iOS security testing. Point it at an
 ## Install
 
 ```bash
-git clone https://github.com/USER/MOBSEC.git
-cd MOBSEC
+git clone https://github.com/C0oki3s/Maya.git
+cd Maya
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
@@ -181,12 +181,12 @@ Built-in skill categories: `vulnerabilities/`, `tools/`, `frameworks/`, `platfor
 Run without installing anything locally:
 
 ```bash
-docker pull ghcr.io/USER/maya-agent:latest
+docker pull ghcr.io/C0oki3s/maya-agent:latest
 
 docker run --rm -it \
   -e OPENAI_API_KEY="$OPENAI_API_KEY" \
   -v /path/to/app.apk:/data/app.apk \
-  ghcr.io/USER/maya-agent:latest \
+  ghcr.io/C0oki3s/maya-agent:latest \
   --target com.example.app --package /data/app.apk -n
 ```
 
