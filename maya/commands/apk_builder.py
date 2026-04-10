@@ -69,16 +69,20 @@ def build_apk_buildx(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        "docker",
-        "build",
-        "-f",
-        str(dockerfile),
-        "--target",
-        "apk-output",
-        "--output",
-        f"type=local,dest={output_dir}",
-    ] + build_args + [str(repo_root)]
+    cmd = (
+        [
+            "docker",
+            "build",
+            "-f",
+            str(dockerfile),
+            "--target",
+            "apk-output",
+            "--output",
+            f"type=local,dest={output_dir}",
+        ]
+        + build_args
+        + [str(repo_root)]
+    )
 
     try:
         result = subprocess.run(cmd, check=False)
@@ -188,8 +192,7 @@ def build_apk(
 
     if not _check_command("docker"):
         print(
-            "ERROR: docker command not found. Install Docker Desktop: "
-            "https://docs.docker.com/get-docker/",
+            "ERROR: docker command not found. Install Docker Desktop: https://docs.docker.com/get-docker/",
             file=sys.stderr,
         )
         return 1

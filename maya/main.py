@@ -81,9 +81,7 @@ def _is_headless() -> bool:
 @click.option("--list-skills", "list_skills_flag", is_flag=True, default=False, hidden=True)
 @click.option("--role", default="root", type=click.Choice(["root", "static", "dynamic", "api", "exploit"]), hidden=True)
 # ── APK Build options (hidden, activated with --build-apk) ─────
-@click.option(
-    "--build-apk", is_flag=True, default=False, hidden=True, help="Build and sign companion APK"
-)
+@click.option("--build-apk", is_flag=True, default=False, hidden=True, help="Build and sign companion APK")
 @click.option("--apk-sign-mode", default="uber", type=click.Choice(["uber", "keystore"]), hidden=True)
 @click.option("--apk-keystore", default=None, type=click.Path(exists=True), hidden=True)
 @click.option("--apk-key-alias", default=None, hidden=True)
@@ -214,10 +212,10 @@ def cli(
             api_base=api_base,
         )
         llm = LLMClient(config=config)
-        
+
         # Validate LLM connection before starting scan
         await llm.validate()
-        
+
         tracer = Tracer(run_dir=Path(scan_config.output_dir))
         tracer.log("scan_config", asdict(scan_config))
 
@@ -405,7 +403,7 @@ def cli(
                 api_base=api_base,
             )
             llm = LLMClient(config=config)
-            
+
             # Validate LLM connection before starting scan
             await llm.validate()
 

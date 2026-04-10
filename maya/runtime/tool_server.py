@@ -155,13 +155,45 @@ def _validate_command(cmd: str) -> None:
     """Validate command is in the allowed list to prevent arbitrary execution."""
     # Security: Whitelist of allowed commands in sandbox
     allowed_commands = {
-        "adb", "aapt", "aapt2", "apktool", "jadx", "jarsigner",
-        "keytool", "zipalign", "d8", "baksmali", "smali",
-        "objection", "frida", "frida-ps", "frida-trace", "drozer",
-        "curl", "wget", "grep", "find", "cat", "ls", "pwd",
-        "chmod", "chown", "mkdir", "rm", "cp", "mv",
-        "python", "python3", "pip", "pip3", "node", "npm",
-        "git", "docker", "java", "javac",
+        "adb",
+        "aapt",
+        "aapt2",
+        "apktool",
+        "jadx",
+        "jarsigner",
+        "keytool",
+        "zipalign",
+        "d8",
+        "baksmali",
+        "smali",
+        "objection",
+        "frida",
+        "frida-ps",
+        "frida-trace",
+        "drozer",
+        "curl",
+        "wget",
+        "grep",
+        "find",
+        "cat",
+        "ls",
+        "pwd",
+        "chmod",
+        "chown",
+        "mkdir",
+        "rm",
+        "cp",
+        "mv",
+        "python",
+        "python3",
+        "pip",
+        "pip3",
+        "node",
+        "npm",
+        "git",
+        "docker",
+        "java",
+        "javac",
     }
     cmd_base = Path(cmd).name  # Get just the command name, strip path
     if cmd_base not in allowed_commands:
@@ -230,7 +262,9 @@ def _dispatch_tool(agent_id: str, tool_name: str, kwargs: dict[str, Any]) -> dic
             tmp.write(code)
             code_path = Path(tmp.name)
         try:
-            proc = subprocess.run(["python3", str(code_path)], text=True, capture_output=True, timeout=timeout, check=False, shell=False)
+            proc = subprocess.run(
+                ["python3", str(code_path)], text=True, capture_output=True, timeout=timeout, check=False, shell=False
+            )
             return {"stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode}
         finally:
             code_path.unlink(missing_ok=True)

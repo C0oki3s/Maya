@@ -858,7 +858,7 @@ class MayaUI(App):
             if task:
                 log.write(f"  [{ON_SURF}]{task}[/]")
         elif et == EventType.AGENT_SPAWNED:
-            reason = d.get('reason', '')
+            reason = d.get("reason", "")
             log.write(f"[{c}]+ {event.agent_name}[/] [{ON_SURF_DIM}]spawned[/]")
             if reason:
                 log.write(f"  [{ON_SURF_DIM}]▸ {reason[:200]}[/]")
@@ -875,8 +875,8 @@ class MayaUI(App):
                 log.write(f"[{PRIMARY_DIM}]◆ {event.agent_name}[/] [{ON_SURF}]thinking:[/]")
                 log.write(f"  [{ON_SURF_DIM}]{txt}[/]")
         elif et == EventType.TOOL_CALL_START:
-            tool_name = d.get('tool', '?')
-            reason = d.get('reasoning', '')
+            tool_name = d.get("tool", "?")
+            reason = d.get("reasoning", "")
             log.write(f"[{c}]▸  {tool_name}[/]")
             if reason:
                 log.write(f"  [{ON_SURF_DIM}]{reason[:200]}[/]")
@@ -889,9 +889,11 @@ class MayaUI(App):
             sc = SEV.get(sev.lower(), ON_SURF)
             log.write(f"[{sc}]◆  {sev.upper()}  {d.get('title', '—')}[/]")
         elif et == EventType.AGENT_COMPLETED:
-            findings_count = d.get('findings', 0)
-            summary = d.get('summary', '')
-            log.write(f"[{c}]✓  {event.agent_name}[/] [{GREEN}]completed[/] [{ON_SURF_DIM}]{findings_count} findings[/]")
+            findings_count = d.get("findings", 0)
+            summary = d.get("summary", "")
+            log.write(
+                f"[{c}]✓  {event.agent_name}[/] [{GREEN}]completed[/] [{ON_SURF_DIM}]{findings_count} findings[/]"
+            )
             if summary:
                 log.write(f"  [{ON_SURF}]▸ {summary[:300]}[/]")
         elif et == EventType.AGENT_FAILED:
