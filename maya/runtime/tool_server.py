@@ -140,12 +140,32 @@ def _validate_package_name(package: str) -> str:
 
 def _validate_path(path: str) -> Path:
     """Validate file path is within workspace to prevent path traversal."""
+    # Security: Reject paths with suspicious characters
+    if ".." in path or path.startswith("/") and not path.startswith("/workspace"):
+        raise ValueError(f"Invalid path: {path}")
     resolved = Path(path).resolve()
     try:
         resolved.relative_to(_WORKSPACE_ROOT)
     except ValueError:
         raise ValueError(f"Path outside workspace: {path}") from None
     return resolved
+
+
+def _validate_command(cmd: str) -> None:
+    """Validate command is in the allowed list to prevent arbitrary execution."""
+    # Security: Whitelist of allowed commands in sandbox
+    allowed_commands = {
+        "adb", "aapt", "aapt2", "apktool", "jadx", "jarsigner",
+        "keytool", "zipalign", "d8", "baksmali", "smali",
+        "objection", "frida", "frida-ps", "frida-trace", "drozer",
+        "curl", "wget", "grep", "find", "cat", "ls", "pwd",
+        "chmod", "chown", "mkdir", "rm", "cp", "mv",
+        "python", "python3", "pip", "pip3", "node", "npm",
+        "git", "docker", "java", "javac",
+    }
+    cmd_base = Path(cmd).name  # Get just the command name, strip path
+    if cmd_base not in allowed_commands:
+        raise ValueError(f"Command not allowed: {cmd_base}")
 
 
 def _auth_ok(authorization: str | None) -> bool:
@@ -180,26 +200,40 @@ def execute(req: ExecuteRequest, authorization: str | None = Header(default=None
     try:
         result = _dispatch_tool(req.agent_id, req.tool_name, req.kwargs)
         return {"result": result, "error": None}
-    except Exception as exc:  # noqa: BLE001
-        # Security: Sanitize exception to avoid information disclosure
-        error_msg = f"{type(exc).__name__}: {str(exc)[:200]}"
+    except (ValueError, FileNotFoundError) as exc:
+        # Security: Only expose safe exception types with limited details
+        error_msg = f"{type(exc).__name__}: {str(exc)[:100]}"
         return {"result": None, "error": error_msg}
+    except Exception:  # noqa: BLE001
+        # Security: Don't expose internal exception details
+        return {"result": None, "error": "Internal error occurred"}
 
 
 def _dispatch_tool(agent_id: str, tool_name: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     if tool_name == "terminal_execute":
         command = kwargs["command"]
         timeout = int(kwargs.get("timeout", "60"))
-        # Security: Parse command safely without shell injection
+        # Security: Parse command safely and validate allowed commands
         cmd_parts = shlex.split(command) if isinstance(command, str) else command
-        proc = subprocess.run(cmd_parts, text=True, capture_output=True, timeout=timeout, check=False)
+        if not isinstance(cmd_parts, list) or len(cmd_parts) == 0:
+            raise ValueError("Invalid command format")
+        # Validate the base command is safe (whitelist approach)
+        _validate_command(cmd_parts[0])
+        proc = subprocess.run(cmd_parts, text=True, capture_output=True, timeout=timeout, check=False, shell=False)
         return {"stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode}
 
     if tool_name == "python_execute":
         code = kwargs["code"]
         timeout = int(kwargs.get("timeout", "60"))
-        proc = subprocess.run(["python3", "-c", code], text=True, capture_output=True, timeout=timeout)
-        return {"stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode}
+        # Security: Write code to temporary file instead of passing via -c to avoid injection
+        with NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tmp:
+            tmp.write(code)
+            code_path = Path(tmp.name)
+        try:
+            proc = subprocess.run(["python3", str(code_path)], text=True, capture_output=True, timeout=timeout, check=False, shell=False)
+            return {"stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode}
+        finally:
+            code_path.unlink(missing_ok=True)
 
     if tool_name == "frida_attach":
         return _FRIDA_MANAGER.attach(agent_id=agent_id, package_name=kwargs["package_name"])
@@ -218,12 +252,18 @@ def _dispatch_tool(agent_id: str, tool_name: str, kwargs: dict[str, Any]) -> dic
 
     if tool_name == "file_read":
         # Security: Validate path to prevent traversal attacks
-        path = _validate_path(kwargs["path"])
+        path_str = str(kwargs["path"])
+        path = _validate_path(path_str)
+        if not path.exists():
+            raise FileNotFoundError(f"File not found: {path_str}")
+        if not path.is_file():
+            raise ValueError(f"Not a file: {path_str}")
         return {"content": path.read_text(encoding="utf-8")}
 
     if tool_name == "file_write":
         # Security: Validate path to prevent traversal attacks
-        path = _validate_path(kwargs["path"])
+        path_str = str(kwargs["path"])
+        path = _validate_path(path_str)
         content = str(kwargs["content"])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
