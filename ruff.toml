@@ -1,0 +1,25 @@
+# Ruff configuration
+target-version = "py310"
+line-length = 120
+
+[lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # isort
+  "UP",   # pyupgrade
+  "B",    # flake8-bugbear
+  "S",    # flake8-bandit (security)
+  "T20",  # flake8-print
+  "SIM",  # flake8-simplify
+]
+ignore = [
+  "S101",   # assert usage (fine in tests)
+  "S603",   # subprocess without shell=True (we validate inputs)
+  "S607",   # partial executable path (expected for tool binaries)
+  "T201",   # print statements (used in CLI)
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["S101", "S106", "T201"]

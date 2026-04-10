@@ -1,0 +1,23 @@
+# Codeowners — automatically request reviews from the right people.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything
+*                       @USER
+
+# Core agent system
+maya/agents/            @USER
+maya/llm/               @USER
+
+# Tool modules
+maya/tools/             @USER
+
+# Docker & CI
+containers/             @USER
+.github/workflows/      @USER
+
+# Skills
+maya/skills/            @USER
+
+# Documentation
+docs/                   @USER
+*.md                    @USER

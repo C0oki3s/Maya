@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maya-agent"
+version = "0.1.0"
+description = "Bare-metal Phase 1 implementation for Maya AI Agent"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "click>=8.1.0",
+  "docker>=7.0.0",
+  "fastapi>=0.115.0",
+  "httpx>=0.28.0",
+  "jinja2>=3.1.0",
+  "litellm>=1.67.0",
+  "pydantic>=2.10.0",
+  "pyyaml>=6.0.0",
+  "requests>=2.32.0",
+  "uvicorn>=0.34.0",
+  "textual>=0.50.0",
+  "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.setuptools.package-data]
+maya = ["**/*.jinja", "**/*.md", "**/*.yaml", "**/*.yml", "**/*.txt"]
+
+[project.scripts]
+maya = "maya.main:cli"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "integration: marks tests that require real connected device and companion runtime",
+]

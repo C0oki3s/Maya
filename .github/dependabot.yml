@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    reviewers:
+      - USER
+
+  - package-ecosystem: docker
+    directory: "/containers"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - docker
+    reviewers:
+      - USER
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - ci
+    reviewers:
+      - USER

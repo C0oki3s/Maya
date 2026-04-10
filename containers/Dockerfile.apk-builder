@@ -1,0 +1,103 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1 – Android SDK + Gradle toolchain
+# ─────────────────────────────────────────────────────────────────────────────
+FROM eclipse-temurin:25-jdk-jammy AS android-sdk-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ANDROID_HOME=/opt/android-sdk
+ENV PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends wget unzip && \
+    rm -rf /var/lib/apt/lists/*
+
+# Android SDK command-line tools (build 11076708, Nov 2024)
+ARG ANDROID_CMDTOOLS_BUILD=11076708
+RUN set -eux; \
+    mkdir -p "$ANDROID_HOME/cmdline-tools"; \
+    wget -q \
+        "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDTOOLS_BUILD}_latest.zip" \
+        -O /tmp/cmdtools.zip; \
+    unzip -q /tmp/cmdtools.zip -d "$ANDROID_HOME/cmdline-tools"; \
+    mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"; \
+    rm /tmp/cmdtools.zip
+
+# Accept all SDK licenses and install Android 34 platform + build-tools
+RUN yes | sdkmanager --licenses > /dev/null 2>&1 || true; \
+    sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+
+# Install Gradle 8.8 directly so we do not rely on gradlew download at build time
+ARG GRADLE_VERSION=8.8
+RUN set -eux; \
+    wget -q \
+        "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" \
+        -O /tmp/gradle.zip; \
+    unzip -q /tmp/gradle.zip -d /opt; \
+    ln -sf "/opt/gradle-${GRADLE_VERSION}/bin/gradle" /usr/local/bin/gradle; \
+    rm /tmp/gradle.zip
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 – Build the companion APK
+# ─────────────────────────────────────────────────────────────────────────────
+FROM android-sdk-base AS builder
+
+# Mirror the repo layout so build.gradle.kts path helpers resolve correctly:
+#   rootDir.parentFile.parentFile → /project
+#   signerJar → /project/assets/signer/uber-apk-signer-1.3.0.jar
+#   apkOutputDir → /project/assets/android/apk
+WORKDIR /project
+COPY assets/signer/uber-apk-signer-1.3.0.jar assets/signer/uber-apk-signer-1.3.0.jar
+COPY companion_app/android companion_app/android
+
+# Tell the Android Gradle plugin where the SDK lives
+RUN echo "sdk.dir=$ANDROID_HOME" > companion_app/android/local.properties
+
+# Pre-create output directory so Gradle copy tasks can write into it
+RUN mkdir -p assets/android/apk
+
+WORKDIR /project/companion_app/android
+
+# Build debug + release APKs and copy them to assets/android/apk/
+RUN gradle buildCompanionApks --no-daemon --stacktrace
+
+# Sign release APK with uber-apk-signer (default, always runs)
+RUN gradle signReleaseApkWithUber --no-daemon
+
+# ── Optional: keystore signing ─────────────────────────────────────
+# Usage: --build-arg SIGN_MODE=keystore \
+#         --build-arg KEYSTORE_BASE64=$(base64 -w0 release.jks) \
+#         --build-arg KEY_ALIAS=my_alias \
+#         --build-arg STORE_PASS=my_pass \
+#         --build-arg KEY_PASS=my_key_pass   (optional)
+ARG SIGN_MODE=uber
+ARG KEYSTORE_BASE64=
+ARG KEY_ALIAS=
+ARG STORE_PASS=
+ARG KEY_PASS=
+
+RUN set -e; \
+    if [ "$SIGN_MODE" = "keystore" ]; then \
+        if [ -z "$KEYSTORE_BASE64" ]; then \
+            echo "ERROR: Missing --build-arg KEYSTORE_BASE64=<base64-encoded .jks/.p12>"; exit 1; \
+        fi; \
+        if [ -z "$KEY_ALIAS" ]; then \
+            echo "ERROR: Missing --build-arg KEY_ALIAS=<key alias>"; exit 1; \
+        fi; \
+        if [ -z "$STORE_PASS" ]; then \
+            echo "ERROR: Missing --build-arg STORE_PASS=<keystore password>"; exit 1; \
+        fi; \
+        printf '%s' "$KEYSTORE_BASE64" | base64 -d > /tmp/release.keystore; \
+        gradle signReleaseApkWithKeystore --no-daemon \
+            "-PkeystorePath=/tmp/release.keystore" \
+            "-PkeyAlias=$KEY_ALIAS" \
+            "-PstorePass=$STORE_PASS" \
+            ${KEY_PASS:+"-PkeyPass=$KEY_PASS"}; \
+        rm -f /tmp/release.keystore; \
+    fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3 – Export-only stage (scratch → just the APK files)
+# Build with: docker build --target apk-output --output type=local,dest=assets/android/apk .
+# ─────────────────────────────────────────────────────────────────────────────
+FROM scratch AS apk-output
+COPY --from=builder /project/assets/android/apk/ /
