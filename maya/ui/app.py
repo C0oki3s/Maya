@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import traceback
 from pathlib import Path
 from time import time
 from typing import Any
 
-from textual import on
+from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
@@ -18,15 +19,16 @@ from textual.widgets import Button, Footer, Input, Label, RichLog, Static, Tree
 from textual.widgets.tree import TreeNode
 from textual.worker import Worker, WorkerState
 
+from maya.decision.broker import DecisionRequest, DecisionResponse, get_decision_broker
 from maya.telemetry.event_bus import Event, EventBus, EventType
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Maya Design System — Dark Mode Colour Tokens (ui-ux-pro-max aligned)
+# ???????????????????????????????????????????????????????????????
+# Maya Design System â€” Dark Mode Colour Tokens (ui-ux-pro-max aligned)
 #
 # True black base with high-contrast desaturated accents.
 # Semantic colors: blue (primary), green (success), amber (warn), red (danger).
 # All text pairs meet WCAG AA (4.5:1) for accessibility.
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ???????????????????????????????????????????????????????????????
 
 # -- Surface scale (black base) --
 BG_BASE = "#000000"  # true black background
@@ -38,7 +40,7 @@ BORDER = "#333333"  # subtle borders and dividers
 # -- Text scale (high contrast on black) --
 TEXT_PRIMARY = "#e5e5e5"  # primary text (contrast 18.5:1)
 TEXT_SECONDARY = "#b0b0b0"  # secondary text (contrast 9.7:1)
-TEXT_TERTIARY = "#808080"  # tertiary labels (contrast 4.6:1 — meets AA)
+TEXT_TERTIARY = "#808080"  # tertiary labels (contrast 4.6:1 â€” meets AA)
 TEXT_DISABLED = "#555555"  # disabled text
 
 # -- Semantic accent colours (desaturated for dark mode) --
@@ -146,12 +148,12 @@ SKILL_CATEGORIES = {
 
 # Subagent role definitions
 SUBAGENT_ROLES = {
-    "root": "Orchestrator — coordinates all agents",
-    "static": "Static Analysis — APK/IPA decompilation",
-    "dynamic": "Dynamic Testing — runtime instrumentation",
-    "api": "API Discovery — endpoint & traffic analysis",
-    "exploit": "Exploit Chains — vulnerability chaining",
-    "flutter": "Flutter — Dart/Flutter-specific analysis",
+    "root": "Orchestrator â€” coordinates all agents",
+    "static": "Static Analysis â€” APK/IPA decompilation",
+    "dynamic": "Dynamic Testing â€” runtime instrumentation",
+    "api": "API Discovery â€” endpoint & traffic analysis",
+    "exploit": "Exploit Chains â€” vulnerability chaining",
+    "flutter": "Flutter â€” Dart/Flutter-specific analysis",
 }
 
 SEV = {
@@ -177,19 +179,24 @@ def _ec(et: EventType) -> str:
         EventType.TOOL_CALL_START: WARNING,
         EventType.TOOL_CALL_COMPLETE: PRIMARY_DIM,
         EventType.TOOL_CALL_ERROR: f"bold {ERROR}",
+        EventType.SANDBOX_UNAVAILABLE: ERROR_DIM,
         EventType.THINKING: ON_SURF,
         EventType.REFLECTION: f"italic {ON_SURF_DIM}",
+        EventType.LOOP_STAGE_CHANGED: PRIMARY_DIM,
         EventType.FINDING_ADDED: f"bold {ERROR}",
         EventType.USER_MESSAGE: f"bold {ON_SURF_HI}",
+        EventType.DECISION_REQUESTED: WARNING,
+        EventType.DECISION_ANSWERED: PRIMARY,
+        EventType.DECISION_AUTO_DEFAULTED: AMBER,
         EventType.SCAN_STARTED: f"bold {PRIMARY}",
         EventType.SCAN_COMPLETED: f"bold {PRIMARY}",
         EventType.CHECKPOINT_SAVED: WARNING,
     }.get(et, ON_SURF)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ???????????????????????????????????????????????????????????????
 # QuitModal
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ???????????????????????????????????????????????????????????????
 
 
 class QuitModal(ModalScreen[bool]):
@@ -265,9 +272,39 @@ class QuitModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# FindingDetail — Center overlay
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+class DecisionModal(ModalScreen[dict[str, str]]):
+    BINDINGS = [Binding("escape", "cancel", show=False)]
+
+    def __init__(self, request: DecisionRequest, **kw: Any) -> None:
+        super().__init__(**kw)
+        self._request = request
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="qm-card"):
+            yield Label(self._request.prompt[:220], id="qm-title")
+            yield Input(placeholder="Optional note...", id="decision-note")
+            with Horizontal(id="qm-row"):
+                for idx, option in enumerate(self._request.options[:3]):
+                    yield Button(option, id=f"decision-opt-{idx}", classes="qm-btn")
+
+    @on(Button.Pressed, "#decision-opt-0")
+    @on(Button.Pressed, "#decision-opt-1")
+    @on(Button.Pressed, "#decision-opt-2")
+    def _decide(self, event: Button.Pressed) -> None:
+        note = ""
+        try:
+            note = self.query_one("#decision-note", Input).value.strip()
+        except NoMatches:
+            note = ""
+        self.dismiss({"selected_option": str(event.button.label), "note": note, "source": "human"})
+
+    def action_cancel(self) -> None:
+        self.dismiss({"selected_option": self._request.safe_default, "note": "dismissed", "source": "auto"})
+
+
+# ???????????????????????????????????????????????????????????????
+# FindingDetail â€” Center overlay
+# ???????????????????????????????????????????????????????????????
 
 
 class FindingDetail(Static):
@@ -290,10 +327,10 @@ class FindingDetail(Static):
         sev = f.get("severity", "info").upper()
         sc = SEV.get(f.get("severity", "info").lower(), ON_SURF)
         title = f.get("title", "Untitled")
-        desc = f.get("description", "—")
+        desc = f.get("description", "â€”")
         evidence = f.get("evidence", "")
         remediation = f.get("remediation", "")
-        agent = f.get("agent_name", "—")
+        agent = f.get("agent_name", "â€”")
         lines = [
             "",
             f"  [{sc}]{sev}[/]",
@@ -312,9 +349,36 @@ class FindingDetail(Static):
         return "\n".join(lines)
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# SidebarStats — tokens / cost / findings
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+class TextDetail(Static):
+    DEFAULT_CSS = f"""
+    TextDetail {{
+        width: 100%;
+        height: 100%;
+        background: {SURF_LOW};
+        padding: 2 3;
+        color: {ON_SURF};
+    }}
+    """
+
+    def __init__(self, title: str, body: str, **kw: Any) -> None:
+        super().__init__(**kw)
+        self._title = title
+        self._body = body
+
+    def render(self) -> str:
+        lines = [
+            f"  [{ON_SURF_HI}]{self._title}[/]",
+            "",
+            *[f"  [{ON_SURF}]{line}[/]" for line in self._body.splitlines()],
+            "",
+            f"  [{ON_SURF_DIM}]esc to close[/]",
+        ]
+        return "\n".join(lines)
+
+
+# ???????????????????????????????????????????????????????????????
+# SidebarStats â€” tokens / cost / findings
+# ???????????????????????????????????????????????????????????????
 
 
 class SidebarStats(Static):
@@ -341,9 +405,9 @@ class SidebarStats(Static):
         )
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Pulse — Breathing accent dot
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ???????????????????????????????????????????????????????????????
+# Pulse â€” Breathing accent dot
+# ???????????????????????????????????????????????????????????????
 
 
 class Pulse(Static):
@@ -364,17 +428,17 @@ class Pulse(Static):
 
     def render(self) -> str:
         c = PRIMARY if self._tick % 2 == 0 else PRIMARY_DIM
-        g = "●" if self._tick % 2 == 0 else "○"
+        g = "*" if self._tick % 2 == 0 else "o"
         return f"[{c}] {g} [/]"
 
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# MayaUI — Maya Design System
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ???????????????????????????????????????????????????????????????
+# MayaUI â€” Maya Design System
+# ???????????????????????????????????????????????????????????????
 
 
 class MayaUI(App):
-    """Maya — Dark mode design system (ui-ux-pro-max aligned).
+    """Maya â€” Dark mode design system (ui-ux-pro-max aligned).
 
     True black background with high-contrast desaturated accents.
     Semantic colors: blue (primary), green (success), amber (warning), red (danger).
@@ -387,17 +451,18 @@ class MayaUI(App):
         background: {SURF};
     }}
 
-    /* ── Main: log area ── */
+    /* -- Main: log area -- */
     #main {{
         width: 1fr;
         height: 100%;
         background: {SURF};
+        border-right: solid {OUTLINE_V};
     }}
 
     #bar {{
         height: 1;
-        background: {SURF};
-        color: {ON_SURF_DIM};
+        background: {SURF_LOWEST};
+        color: {ON_SURF_HI};
         padding: 0 1;
         dock: top;
     }}
@@ -406,7 +471,7 @@ class MayaUI(App):
         background: {SURF_LOWEST};
         color: {ON_SURF};
         height: 1fr;
-        padding: 1 2;
+        padding: 1 1;
         scrollbar-size: 1 1;
     }}
 
@@ -418,14 +483,15 @@ class MayaUI(App):
     #chat-well {{
         height: 3;
         background: {SURF_LOW};
-        padding: 0 2;
+        padding: 0 1;
+        border-top: solid {OUTLINE_V};
         dock: bottom;
     }}
     /* Input: clean, bottom-edge feel */
     #chat {{
         width: 1fr;
         background: {SURF_MID};
-        color: {ON_SURF};
+        color: {ON_SURF_HI};
         border: none;
     }}
     #chat:focus {{
@@ -433,9 +499,9 @@ class MayaUI(App):
         border: none;
     }}
 
-    /* ── Sidebar: scrollable panel stack ──────────────────────── */
+    /* -- Sidebar: scrollable panel stack ------------------------ */
     #sidebar {{
-        width: 40;
+        width: 42;
         height: 100%;
         background: {SURF_LOW};
         border: none;
@@ -447,10 +513,13 @@ class MayaUI(App):
         scrollbar-size: 1 1;
     }}
 
-    /* ── Scan Info panel — deep navy ─────────────────────────── */
+    /* -- Scan Info panel â€” deep navy --------------------------- */
     .panel-header {{
         height: 1;
-        padding: 0 2;
+        padding: 0 1;
+        background: {SURF_MID};
+        color: {PRIMARY};
+        text-style: bold;
     }}
     #sb-scan-hdr {{
         color: {SECONDARY};
@@ -464,7 +533,7 @@ class MayaUI(App):
         max-height: 8;
     }}
 
-    /* ── Agents panel — dark forest ──────────────────────────── */
+    /* -- Agents panel â€” dark forest ---------------------------- */
     #sb-al {{
         height: 1;
         padding: 0 2;
@@ -482,7 +551,7 @@ class MayaUI(App):
         border: none;
     }}
 
-    /* ── Subagents panel — forest accent ─────────────────────── */
+    /* -- Subagents panel â€” forest accent ----------------------- */
     #sb-sub-hdr {{
         color: {PRIMARY_DIM};
         background: {PANEL_AGENTS};
@@ -495,7 +564,7 @@ class MayaUI(App):
         max-height: 10;
     }}
 
-    /* ── Tools panel — dark plum ─────────────────────────────── */
+    /* -- Tools panel â€” dark plum ------------------------------- */
     #sb-tools-hdr {{
         color: {WARNING};
         background: {PANEL_TOOLS};
@@ -511,7 +580,7 @@ class MayaUI(App):
         border: none;
     }}
 
-    /* ── Skills panel — dark steel ───────────────────────────── */
+    /* -- Skills panel â€” dark steel ----------------------------- */
     #sb-skills-hdr {{
         color: {BLUE};
         background: {PANEL_SKILLS};
@@ -531,10 +600,10 @@ class MayaUI(App):
     .ghost-sep {{
         height: 1;
         background: {OUTLINE_V};
-        margin: 0 2;
+        margin: 0 1;
     }}
 
-    /* ── Findings panel — dark wine ──────────────────────────── */
+    /* -- Findings panel â€” dark wine ---------------------------- */
     #sb-fl {{
         height: 1;
         padding: 0 2;
@@ -554,6 +623,7 @@ class MayaUI(App):
 
     #stats {{
         dock: bottom;
+        border-top: solid {OUTLINE_V};
     }}
 
     Footer {{
@@ -568,6 +638,7 @@ class MayaUI(App):
         Binding("ctrl+q", "request_quit", "Quit", show=False),
         Binding("tab", "cycle_agent", "Next", show=True),
         Binding("escape", "close_detail", "Back", show=False),
+        Binding("ctrl+d", "open_scan_details", "Details", show=True),
         Binding("ctrl+e", "nudge_enum", "Enum", show=True),
         Binding("ctrl+l", "nudge_flow", "Flow", show=True),
     ]
@@ -602,8 +673,12 @@ class MayaUI(App):
         self._wd_running = False
         self._seen_ckpt: set[str] = set()
         self._tool_calls: dict[str, int] = {}
+        self._booted_at = time()
+        self._scan_worker_started = False
+        self._scan_status = "boot"
+        self._scan_error: str | None = None
 
-    # ── Compose ───────────────────────────────────────────────────
+    # -- Compose ---------------------------------------------------
 
     def compose(self) -> ComposeResult:
         with Vertical(id="main"):
@@ -617,54 +692,72 @@ class MayaUI(App):
 
         with Vertical(id="sidebar"):
             with VerticalScroll(id="sb-scroll"):
-                # ── Scan Info ──
-                yield Static(" ◈ scan", id="sb-scan-hdr", classes="panel-header")
+                # -- Scan Info --
+                yield Static(" scan", id="sb-scan-hdr", classes="panel-header")
                 yield Static("", id="scan-info")
                 yield Static("", classes="ghost-sep")
-                # ── Agents ──
-                yield Static(" ▲ agents", id="sb-al", classes="panel-header")
+                # -- Agents --
+                yield Static(" agents", id="sb-al", classes="panel-header")
                 yield Tree("maya", id="agents")
                 yield Static("", classes="ghost-sep")
-                # ── Findings ──
-                yield Static(" ◆ findings", id="sb-fl", classes="panel-header")
+                # -- Findings --
+                yield Static(" findings", id="sb-fl", classes="panel-header")
                 yield Tree("vulns", id="findings")
             yield SidebarStats(id="stats")
 
         yield Footer()
 
-    # ── Mount ─────────────────────────────────────────────────────
+    # -- Mount -----------------------------------------------------
 
     def on_mount(self) -> None:
         EventBus.instance().subscribe(self._on_event)
+        get_decision_broker().set_ui_handler(self._request_decision_ui)
         self.query_one("#agents", Tree).root.expand()
         self.query_one("#findings", Tree).root.expand()
-        self.query_one("#log", RichLog).write(f"[{PRIMARY_DIM}]maya[/]  [{ON_SURF_DIM}]ready[/]")
+        self.query_one("#log", RichLog).write(f"[{PRIMARY_DIM}]maya[/]  [{ON_SURF_DIM}]ui ready[/]")
+        self.query_one("#log", RichLog).write(f"[{ON_SURF_DIM}]bootstrapping scan runtime...[/]")
         self.set_interval(10.0, self._wd_tick)
         if self._run_dir:
-            self.set_interval(3.0, self._ckpt_tick)
+            self.set_interval(5.0, self._ckpt_tick)
         self._populate_scan_info()
         if self._scan_worker_fn is not None:
-            self.run_worker(
-                self._run_scan_wrapper,
-                exclusive=True,
-                thread=False,
-                exit_on_error=False,
-            )
+            self.call_after_refresh(self._start_scan_worker)
 
-    # ── Scan worker wrapper ────────────────────────────────────────
+    def on_unmount(self) -> None:
+        get_decision_broker().set_ui_handler(None)
+
+    def _start_scan_worker(self) -> None:
+        if self._scan_worker_started:
+            return
+        self._scan_worker_started = True
+        self.run_worker(
+            self._run_scan_wrapper,
+            exclusive=True,
+            thread=False,
+            exit_on_error=False,
+        )
+
+    # -- Scan worker wrapper ----------------------------------------
 
     async def _run_scan_wrapper(self) -> None:
         try:
+            self._scan_status = "running"
+            self._scan_error = None
+            self._populate_scan_info()
+            t_ms = int((time() - self._booted_at) * 1000)
+            self.query_one("#log", RichLog).write(f"[{ON_SURF_DIM}]scan worker started ({t_ms}ms after ui load)[/]")
             await self._scan_worker_fn()
+            self._scan_status = "completed"
+            self._populate_scan_info()
         except Exception as exc:
-            import traceback
-
             tb = traceback.format_exc()
+            self._scan_status = "failed"
+            self._scan_error = tb
+            self._populate_scan_info()
             try:
                 log: RichLog = self.query_one("#log", RichLog)
-                log.write(f"[{ERROR}]\u2717  scan crashed: {exc}[/]")
-                for line in tb.strip().splitlines()[-8:]:
-                    log.write(f"[{ON_SURF_DIM}]  {line}[/]")
+                log.write(f"[{ERROR}]scan failed: {exc}[/]")
+                log.write(f"[{ON_SURF_DIM}]click 'scan' panel for full technical details[/]")
             except NoMatches:
                 pass
             try:  # noqa: SIM105
@@ -687,7 +780,7 @@ class MayaUI(App):
             except NoMatches:
                 pass
 
-    # ── Populate sidebar panels ───────────────────────────────────
+    # -- Populate sidebar panels -----------------------------------
 
     def _populate_scan_info(self) -> None:
         try:
@@ -695,21 +788,80 @@ class MayaUI(App):
         except NoMatches:
             return
         cfg = self._scan_config
-        target = cfg.get("target", "—")
-        pkg = cfg.get("package", "—")
-        device = cfg.get("device", "—")
-        platform = cfg.get("platform", "—")
-        model = cfg.get("model", os.environ.get("MAYA_LLM", "—"))
-        mode = cfg.get("scan_mode", "—")
+        target = cfg.get("target", "-")
+        mode = cfg.get("scan_mode", "-")
+        sandbox_mode = cfg.get("sandbox_mode", "strict")
+        status_color = (
+            GREEN if self._scan_status == "completed" else (ERROR if self._scan_status == "failed" else PRIMARY)
+        )
+        status_text = self._scan_status
+        if self._scan_status == "failed":
+            status_text = "failed (click for details)"
         lines = [
             f"  [{ON_SURF_DIM}]target  [{ON_SURF}]{target}[/]",
-            f"  [{ON_SURF_DIM}]pkg     [{SECONDARY}]{pkg}[/]",
-            f"  [{ON_SURF_DIM}]device  [{PRIMARY_DIM}]{device}[/]",
-            f"  [{ON_SURF_DIM}]plat    [{ON_SURF}]{platform}[/]",
-            f"  [{ON_SURF_DIM}]model   [{WARNING}]{model}[/]",
             f"  [{ON_SURF_DIM}]mode    [{PRIMARY}]{mode}[/]",
+            f"  [{ON_SURF_DIM}]sandbox [{PRIMARY_DIM}]{sandbox_mode}[/]",
+            f"  [{ON_SURF_DIM}]status  [{status_color}]{status_text}[/]",
+            f"  [{ON_SURF_DIM}]hint    [{ON_SURF}]click for details[/]",
         ]
         panel.update("\n".join(lines))
+
+    def _build_scan_detail_text(self) -> str:
+        cfg = self._scan_config
+        lines = [
+            f"status: {self._scan_status}",
+            f"target: {cfg.get('target', '-')}",
+            f"package: {cfg.get('package', '-')}",
+            f"device: {cfg.get('device', '-')}",
+            f"platform: {cfg.get('platform', '-')}",
+            f"model: {cfg.get('model', os.environ.get('MAYA_LLM', '-'))}",
+            f"mode: {cfg.get('scan_mode', '-')}",
+            f"sandbox_mode: {cfg.get('sandbox_mode', 'strict')}",
+            (
+                "decision: "
+                f"{cfg.get('decision_mode', 'human_or_auto')} "
+                f"(timeout={cfg.get('decision_timeout_seconds', 30)}s)"
+            ),
+            f"time_budget_minutes: {cfg.get('scan_time_budget_minutes', 60)}",
+        ]
+        if self._scan_error:
+            lines += [
+                "",
+                "error:",
+                str(self._scan_error),
+            ]
+            if "strict sandbox mode requires an active tool_server" in self._scan_error:
+                lines += [
+                    "",
+                    "next steps:",
+                    "1. Start docker sandbox tool_server before scan.",
+                    "2. Or run with --sandbox-mode permissive for host-only execution.",
+                ]
+        return "\n".join(lines)
+
+    def _open_text_detail(self, title: str, body: str) -> None:
+        self._detail_open = True
+        overlay = self.query_one("#detail-overlay", Container)
+        log = self.query_one("#log", RichLog)
+        log.display = False
+        overlay.display = True
+        overlay.remove_children()
+        overlay.mount(TextDetail(title, body))
+
+    def _build_agent_detail(self, agent_id: str) -> str:
+        name = self._agent_names.get(agent_id, "unknown")
+        events_for_agent = self._agent_events.get(agent_id, [])
+        lines = [
+            f"agent_id: {agent_id}",
+            f"name: {name}",
+            f"events: {len(events_for_agent)}",
+            "",
+            "recent events:",
+        ]
+        for event in events_for_agent[-8:]:
+            event_payload = json.dumps(event.data, default=str)[:360]
+            lines.append(f"- {event.type.value}: {event_payload}")
+        return "\n".join(lines)
 
     def _populate_subagents(self) -> None:
         try:
@@ -719,7 +871,7 @@ class MayaUI(App):
         lines = []
         for role, desc in SUBAGENT_ROLES.items():
             rc = ROLE_COLORS.get(role, ON_SURF)
-            lines.append(f"  [{rc}]● {role:<8}[/] [{ON_SURF_DIM}]{desc}[/]")
+            lines.append(f"  [{rc}]* {role:<8}[/] [{ON_SURF_DIM}]{desc}[/]")
         panel.update("\n".join(lines))
 
     def _populate_tools(self) -> None:
@@ -751,12 +903,12 @@ class MayaUI(App):
                 node.add_leaf(f"[{ON_SURF_DIM}]{sk}[/]", data=sk)
         tree.root.label = f"[{BLUE}]{total}+ skills[/]"
 
-    # ── Quit ──────────────────────────────────────────────────────
+    # -- Quit ------------------------------------------------------
 
     def action_request_quit(self) -> None:
         self.push_screen(QuitModal(), callback=lambda r: self.exit() if r else None)
 
-    # ── Event dispatch ────────────────────────────────────────────
+    # -- Event dispatch --------------------------------------------
 
     async def _on_event(self, event: Event) -> None:
         self._event_count += 1
@@ -787,7 +939,7 @@ class MayaUI(App):
         if event.type == EventType.FINDING_ADDED:
             self._add_finding(event)
 
-    # ── Bar ───────────────────────────────────────────────────────
+    # -- Bar -------------------------------------------------------
 
     def _update_bar(self) -> None:
         try:
@@ -795,9 +947,13 @@ class MayaUI(App):
         except NoMatches:
             return
         a = self._agent_names.get(self._selected_agent or "", "maya")
-        lbl.update(f" [{ON_SURF}]{a}[/]  [{ON_SURF_DIM}]{self._stage}[/]  [{ON_SURF_DIM}]{self._event_count} evt[/]")
+        elapsed = int(time() - self._booted_at)
+        lbl.update(
+            f" [{ON_SURF}]{a}[/]  [{ON_SURF_DIM}]{self._stage}[/]  "
+            f"[{ON_SURF_DIM}]{self._event_count} evt[/]  [{ON_SURF_DIM}]{elapsed}s[/]"
+        )
 
-    # ── Stats ─────────────────────────────────────────────────────
+    # -- Stats -----------------------------------------------------
 
     def _update_stats(self, event: Event) -> None:
         try:
@@ -814,7 +970,7 @@ class MayaUI(App):
             tool = d.get("tool", "?")
             self._tool_calls[tool] = self._tool_calls.get(tool, 0) + 1
 
-    # ── Agent tree ────
+    # -- Agent tree ----
 
     def _update_tree(self, event: Event) -> None:
         try:
@@ -833,14 +989,14 @@ class MayaUI(App):
         if not node:
             return
         if event.type == EventType.AGENT_COMPLETED:
-            ic, icon = PRIMARY_DIM, "✓"
+            ic, icon = PRIMARY_DIM, "ok"
         elif event.type == EventType.AGENT_FAILED:
-            ic, icon = ERROR_DIM, "✗"
+            ic, icon = ERROR_DIM, "x"
         else:
-            ic, icon = ON_SURF_DIM, "›"
+            ic, icon = ON_SURF_DIM, ">"
         node.label = f"[{ic}]{icon}[/] [{ON_SURF}]{event.agent_name}[/] [{ON_SURF_DIM}]{event.agent_id[:6]}[/]"
 
-    # ── Process log ────
+    # -- Process log ----
 
     def _write_log(self, event: Event) -> None:
         try:
@@ -853,7 +1009,7 @@ class MayaUI(App):
         et = event.type
 
         if et == EventType.AGENT_STARTED:
-            log.write(f"[{c}]→ {event.agent_name}[/] [{ON_SURF_DIM}]started[/]")
+            log.write(f"[{c}]-> {event.agent_name}[/] [{ON_SURF_DIM}]started[/]")
             task = d.get("task", "")[:200]
             if task:
                 log.write(f"  [{ON_SURF}]{task}[/]")
@@ -861,49 +1017,63 @@ class MayaUI(App):
             reason = d.get("reason", "")
             log.write(f"[{c}]+ {event.agent_name}[/] [{ON_SURF_DIM}]spawned[/]")
             if reason:
-                log.write(f"  [{ON_SURF_DIM}]▸ {reason[:200]}[/]")
+                log.write(f"  [{ON_SURF_DIM}]reason: {reason[:200]}[/]")
         elif et == EventType.ITERATION_START:
-            log.write(f"[{ON_SURF_DIM}]·  iter {d.get('iteration', '?')}[/]")
+            log.write(f"[{ON_SURF_DIM}]- iter {d.get('iteration', '?')}[/]")
         elif et == EventType.LLM_RESPONSE:
             model = d.get("model", "?")
             u = d.get("usage", {})
             tok = u.get("total_tokens") or u.get("prompt_tokens", 0) + u.get("completion_tokens", 0)
-            log.write(f"[{c}]↓  {model}  {tok}[/]")
+            log.write(f"[{c}]llm  {model}  {tok}[/]")
         elif et == EventType.THINKING:
             txt = d.get("content", "")[:400]
             if txt:
-                log.write(f"[{PRIMARY_DIM}]◆ {event.agent_name}[/] [{ON_SURF}]thinking:[/]")
+                log.write(f"[{PRIMARY_DIM}]~ {event.agent_name}[/] [{ON_SURF}]thinking:[/]")
                 log.write(f"  [{ON_SURF_DIM}]{txt}[/]")
         elif et == EventType.TOOL_CALL_START:
             tool_name = d.get("tool", "?")
             reason = d.get("reasoning", "")
-            log.write(f"[{c}]▸  {tool_name}[/]")
+            log.write(f"[{c}]tool  {tool_name}[/]")
             if reason:
                 log.write(f"  [{ON_SURF_DIM}]{reason[:200]}[/]")
         elif et == EventType.TOOL_CALL_COMPLETE:
-            log.write(f"[{c}]✓  {d.get('tool', '?')}[/]  [{ON_SURF_DIM}]{d.get('duration', 0)}s[/]")
+            log.write(f"[{c}]ok    {d.get('tool', '?')}[/]  [{ON_SURF_DIM}]{d.get('duration', 0)}s[/]")
         elif et == EventType.TOOL_CALL_ERROR:
-            log.write(f"[{c}]✗  {d.get('tool', '?')}[/]  [{ON_SURF_DIM}]{str(d.get('error', ''))[:140]}[/]")
+            log.write(f"[{c}]fail  {d.get('tool', '?')}[/]  [{ON_SURF_DIM}]{str(d.get('error', ''))[:140]}[/]")
+        elif et == EventType.SANDBOX_UNAVAILABLE:
+            log.write(f"[{c}]sandbox unavailable[/] [{ON_SURF_DIM}]{str(d.get('reason', ''))[:140]}[/]")
+        elif et == EventType.LOOP_STAGE_CHANGED:
+            log.write(
+                f"[{c}]stage[/] [{ON_SURF}]{d.get('stage', '?')}[/] "
+                f"[{ON_SURF_DIM}]leads={d.get('lead_count', 0)}[/]"
+            )
         elif et == EventType.FINDING_ADDED:
             sev = d.get("severity", "info")
             sc = SEV.get(sev.lower(), ON_SURF)
-            log.write(f"[{sc}]◆  {sev.upper()}  {d.get('title', '—')}[/]")
+            log.write(f"[{sc}]finding  {sev.upper()}  {d.get('title', '-')}[/]")
+        elif et == EventType.DECISION_REQUESTED:
+            prompt = str(d.get("prompt", ""))[:140]
+            log.write(f"[{c}]decision gate[/] [{ON_SURF_DIM}]{prompt}[/]")
+        elif et == EventType.DECISION_ANSWERED:
+            log.write(f"[{c}]decision[/] [{ON_SURF}]{d.get('selected_option', '?')}[/]")
+        elif et == EventType.DECISION_AUTO_DEFAULTED:
+            log.write(f"[{c}]auto-decision[/] [{ON_SURF}]{d.get('selected_option', '?')}[/]")
         elif et == EventType.AGENT_COMPLETED:
             findings_count = d.get("findings", 0)
             summary = d.get("summary", "")
             log.write(
-                f"[{c}]✓  {event.agent_name}[/] [{GREEN}]completed[/] [{ON_SURF_DIM}]{findings_count} findings[/]"
+                f"[{c}]done  {event.agent_name}[/] [{GREEN}]completed[/] [{ON_SURF_DIM}]{findings_count} findings[/]"
             )
             if summary:
-                log.write(f"  [{ON_SURF}]▸ {summary[:300]}[/]")
+                log.write(f"  [{ON_SURF}]summary: {summary[:300]}[/]")
         elif et == EventType.AGENT_FAILED:
-            log.write(f"[{c}]✗  {event.agent_name}[/]  [{ON_SURF_DIM}]{str(d.get('error', ''))[:140]}[/]")
+            log.write(f"[{c}]error {event.agent_name}[/]  [{ON_SURF_DIM}]{str(d.get('error', ''))[:140]}[/]")
         elif et == EventType.CHECKPOINT_SAVED:
-            log.write(f"[{c}]⟐  ckpt {d.get('iteration', '?')}[/]")
+            log.write(f"[{c}]ckpt  {d.get('iteration', '?')}[/]")
         elif et == EventType.SCAN_COMPLETED:
             log.write(f"[{c}]scan complete[/]")
 
-    # ── Findings sidebar ──────────────────────────────────────────
+    # -- Findings sidebar ------------------------------------------
 
     def _add_finding(self, event: Event) -> None:
         d = event.data
@@ -918,7 +1088,7 @@ class MayaUI(App):
         sc = SEV.get(d.get("severity", "info").lower(), ON_SURF)
         ftree.root.add_leaf(f"[{sc}]{sev}[/]  [{ON_SURF}]{title}[/]", data=finding)
 
-    # ── Detail overlay ────────────────────────────────────────────
+    # -- Detail overlay --------------------------------------------
 
     @on(Tree.NodeSelected, "#findings")
     def _on_finding_click(self, event: Tree.NodeSelected[dict]) -> None:
@@ -932,6 +1102,16 @@ class MayaUI(App):
         overlay.remove_children()
         overlay.mount(FindingDetail(event.node.data))
 
+    @on(events.Click, "#sb-scan-hdr")
+    @on(events.Click, "#scan-info")
+    def _on_scan_panel_click(self, _: events.Click) -> None:
+        self._open_text_detail("Scan Details", self._build_scan_detail_text())
+
+    @on(events.MouseDown, "#sb-scan-hdr")
+    @on(events.MouseDown, "#scan-info")
+    def _on_scan_panel_mouse_down(self, _: events.MouseDown) -> None:
+        self._open_text_detail("Scan Details", self._build_scan_detail_text())
+
     def action_close_detail(self) -> None:
         if not self._detail_open:
             return
@@ -944,13 +1124,17 @@ class MayaUI(App):
         if self._detail_open:
             self.action_close_detail()
 
-    # ── Agent selection ───────────────────────────────────────────
+    def action_open_scan_details(self) -> None:
+        self._open_text_detail("Scan Details", self._build_scan_detail_text())
+
+    # -- Agent selection -------------------------------------------
 
     @on(Tree.NodeSelected, "#agents")
     def _on_agent_click(self, event: Tree.NodeSelected[str]) -> None:
         if event.node.data and event.node.data in self._agent_ids:
             self._selected_agent = event.node.data
             self._update_bar()
+            self._open_text_detail("Agent Details", self._build_agent_detail(event.node.data))
 
     def action_cycle_agent(self) -> None:
         if not self._agent_ids:
@@ -962,7 +1146,7 @@ class MayaUI(App):
             self._selected_agent = self._agent_ids[(i + 1) % len(self._agent_ids)]
         self._update_bar()
 
-    # ── Chat ──────────────────────────────────────────────────────
+    # -- Chat ------------------------------------------------------
 
     @on(Input.Submitted, "#chat")
     async def _on_chat(self, ev: Input.Submitted) -> None:
@@ -970,7 +1154,7 @@ class MayaUI(App):
         if not text:
             return
         ev.input.value = ""
-        self.query_one("#log", RichLog).write(f"[{ON_SURF_HI}]▹  {text}[/]")
+        self.query_one("#log", RichLog).write(f"[{ON_SURF_HI}]you: {text}[/]")
         await EventBus.instance().emit(
             Event(
                 type=EventType.USER_MESSAGE,
@@ -982,7 +1166,22 @@ class MayaUI(App):
         if self._on_user_input is not None:
             await self._on_user_input(text, self._selected_agent)
 
-    # ── Nudges ────────────────────────────────────────────────────
+    async def _request_decision_ui(self, request: DecisionRequest) -> DecisionResponse:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, str]] = loop.create_future()
+
+        def _on_close(result: dict[str, str] | None) -> None:
+            if not future.done():
+                future.set_result(result or {})
+
+        self.push_screen(DecisionModal(request), callback=_on_close)
+        payload = await future
+        selected = payload.get("selected_option") or request.safe_default
+        note = payload.get("note", "")
+        source = payload.get("source", "human")
+        return DecisionResponse(selected_option=selected, note=note, source=source)
+
+    # -- Nudges ----------------------------------------------------
 
     async def action_nudge_enum(self) -> None:
         if not self._on_user_input or not self._agent_ids:
@@ -993,16 +1192,16 @@ class MayaUI(App):
             "List unresolved surfaces, execute targeted tools, checkpoint.",
             t,
         )
-        self.query_one("#log", RichLog).write(f"[{ON_SURF_DIM}]nudge → enum[/]")
+        self.query_one("#log", RichLog).write(f"[{ON_SURF_DIM}]nudge -> enum[/]")
 
     async def action_nudge_flow(self) -> None:
         if not self._on_user_input or not self._agent_ids:
             return
         t = self._selected_agent or self._agent_ids[0]
         await self._on_user_input(self._recovery_prompt(), t)
-        self.query_one("#log", RichLog).write(f"[{ON_SURF_DIM}]nudge → flow[/]")
+        self.query_one("#log", RichLog).write(f"[{ON_SURF_DIM}]nudge -> flow[/]")
 
-    # ── Watchdog ──────────────────────────────────────────────────
+    # -- Watchdog --------------------------------------------------
 
     def _wd_tick(self) -> None:
         if self._wd_running:
@@ -1036,7 +1235,7 @@ class MayaUI(App):
         finally:
             self._wd_running = False
 
-    # ── Checkpoint polling ────────────────────────────────────────
+    # -- Checkpoint polling ----------------------------------------
 
     def _ckpt_tick(self) -> None:
         if not self._run_dir:
@@ -1054,11 +1253,11 @@ class MayaUI(App):
                 it = int(data.get("iteration_count", 0))
                 fc = len(data.get("findings", []))
                 ag = data.get("agent_name", "?")
-                self.query_one("#log", RichLog).write(f"[{WARNING}]⟐  {ag}  iter={it}  findings={fc}[/]")
+                self.query_one("#log", RichLog).write(f"[{WARNING}]ckpt  {ag}  iter={it}  findings={fc}[/]")
             except Exception:  # noqa: S110
                 pass
 
-    # ── Helpers ────────────────────────────────────────────────────
+    # -- Helpers ----------------------------------------------------
 
     def _infer_stage(self, event: Event) -> str:
         if event.type in {EventType.SCAN_STARTED, EventType.AGENT_STARTED}:
@@ -1083,7 +1282,7 @@ class MayaUI(App):
                 "analyze manifest/components/deep links, write attack surface."
             ),
             "attack": (
-                "Flow recovery: convert leads into tests — deep links, exported components, "
+                "Flow recovery: convert leads into tests â€” deep links, exported components, "
                 "API endpoints, WebView paths, auth/storage. Validate end-to-end."
             ),
             "validate": (
@@ -1092,5 +1291,6 @@ class MayaUI(App):
             ),
         }.get(
             self._stage,
-            ("Flow recovery: continue scan — enumerate surfaces, validate top-risk hypotheses, checkpoint progress."),
+            ("Flow recovery: continue scan â€” enumerate surfaces, validate top-risk hypotheses, checkpoint progress."),
         )
+

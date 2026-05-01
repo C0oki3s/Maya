@@ -30,16 +30,21 @@ class EventType(str, Enum):
     TOOL_CALL_START = "tool_call_start"
     TOOL_CALL_COMPLETE = "tool_call_complete"
     TOOL_CALL_ERROR = "tool_call_error"
+    SANDBOX_UNAVAILABLE = "sandbox_unavailable"
 
     # Agent thinking / planning
     THINKING = "thinking"
     REFLECTION = "reflection"
+    LOOP_STAGE_CHANGED = "loop_stage_changed"
 
     # Findings
     FINDING_ADDED = "finding_added"
 
     # User interaction
     USER_MESSAGE = "user_message"
+    DECISION_REQUESTED = "decision_requested"
+    DECISION_ANSWERED = "decision_answered"
+    DECISION_AUTO_DEFAULTED = "decision_auto_defaulted"
 
     # Scan lifecycle
     SCAN_STARTED = "scan_started"

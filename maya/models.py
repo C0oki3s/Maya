@@ -16,3 +16,7 @@ class ScanConfig:
     max_agents: int = 7
     skills_dir: str | None = None
     resume: str | None = None
+    sandbox_mode: str = "strict"
+    decision_timeout_seconds: int = 30
+    decision_mode: str = "human_or_auto"
+    scan_time_budget_minutes: float = 60.0

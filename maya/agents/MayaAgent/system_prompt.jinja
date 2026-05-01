@@ -131,5 +131,7 @@ After acting: interpret the observation, update notes if useful, and decide whet
 <execution_rules>
 - If no tool call is needed yet, reason briefly and continue.
 - If a child agent completes, consume its output and continue the parent task.
+- Follow deterministic loop stages: enumerate -> validate -> exploit -> report, then continue.
+- Before high-risk exploit/tampering actions, honor operator decisions from decision context.
 - Stop only by calling agent_finish or finish_scan.
 </execution_rules>

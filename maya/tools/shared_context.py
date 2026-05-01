@@ -16,11 +16,19 @@ _SHARED_CONTEXT: dict[str, object] = {
     "decompiled_paths": {},
     "app_metadata": {},
     "notes": [],
+    "decision_history": [],
 }
 
 
 def get_shared_context_snapshot() -> dict[str, object]:
     return dict(_SHARED_CONTEXT)
+
+
+def append_decision_record(record: dict[str, object]) -> None:
+    _SHARED_CONTEXT.setdefault("decision_history", [])
+    history = _SHARED_CONTEXT.get("decision_history")
+    if isinstance(history, list):
+        history.append(record)
 
 
 @register_tool(sandbox_execution=False)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
 from time import time
@@ -14,6 +15,21 @@ class AgentStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     TERMINATED = "terminated"
+
+
+class LoopStage(str, Enum):
+    ENUMERATE = "enumerate"
+    VALIDATE = "validate"
+    EXPLOIT = "exploit"
+    REPORT = "report"
+
+
+class LeadState(str, Enum):
+    NEW = "new"
+    VALIDATED = "validated"
+    EXPLOITED = "exploited"
+    REPORTED = "reported"
+    DISCARDED = "discarded"
 
 
 @dataclass(slots=True)
@@ -41,6 +57,13 @@ class AgentState:
     intercepted_traffic: list[dict[str, Any]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     todo_items: list[dict[str, Any]] = field(default_factory=list)
+    loop_stage: str = LoopStage.ENUMERATE.value
+    leads: list[dict[str, Any]] = field(default_factory=list)
+    decision_history: list[dict[str, Any]] = field(default_factory=list)
+    sandbox_mode: str = "strict"
+    decision_timeout_seconds: int = 30
+    decision_mode: str = "human_or_auto"
+    scan_time_budget_minutes: float = 60.0
     started_at: float | None = None
     finished_at: float | None = None
 
@@ -82,8 +105,72 @@ class AgentState:
         if not success:
             self.tool_errors += 1
 
+    def add_lead(
+        self,
+        *,
+        title: str,
+        source: str,
+        evidence: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        seed = f"{source.lower().strip()}|{title.lower().strip()}"
+        lead_id = hashlib.sha256(seed.encode()).hexdigest()[:16]
+        for lead in self.leads:
+            if lead.get("id") == lead_id:
+                return lead
+
+        lead = {
+            "id": lead_id,
+            "title": title,
+            "source": source,
+            "evidence": evidence[:2000],
+            "metadata": metadata or {},
+            "state": LeadState.NEW.value,
+            "attempts": 0,
+            "created_at": time(),
+            "updated_at": time(),
+        }
+        self.leads.append(lead)
+        return lead
+
+    def mark_first_lead(self, from_state: LeadState, to_state: LeadState) -> dict[str, Any] | None:
+        for lead in self.leads:
+            if lead.get("state") == from_state.value:
+                lead["state"] = to_state.value
+                lead["updated_at"] = time()
+                if to_state == LeadState.EXPLOITED:
+                    lead["attempts"] = int(lead.get("attempts", 0)) + 1
+                return lead
+        return None
+
+    def set_loop_stage(self, stage: LoopStage) -> bool:
+        if self.loop_stage == stage.value:
+            return False
+        self.loop_stage = stage.value
+        return True
+
+    def recompute_loop_stage(self) -> LoopStage:
+        states = [lead.get("state") for lead in self.leads]
+        if LeadState.EXPLOITED.value in states:
+            return LoopStage.REPORT
+        if LeadState.VALIDATED.value in states:
+            return LoopStage.EXPLOIT
+        if LeadState.NEW.value in states:
+            return LoopStage.VALIDATE
+        return LoopStage.ENUMERATE
+
+    def add_decision(self, record: dict[str, Any]) -> None:
+        self.decision_history.append(record)
+
+    def budget_exhausted(self) -> bool:
+        if self.started_at is None:
+            return False
+        return (time() - self.started_at) >= self.scan_time_budget_minutes * 60
+
     def should_terminate(self) -> bool:
         if self.iteration_count >= self.max_iterations:
+            return True
+        if self.budget_exhausted():
             return True
         return self.status in {
             AgentStatus.COMPLETED,
@@ -100,4 +187,6 @@ class AgentState:
             "tool_calls": self.tool_call_count,
             "tool_errors": self.tool_errors,
             "findings": len(self.findings),
+            "loop_stage": self.loop_stage,
+            "leads": len(self.leads),
         }

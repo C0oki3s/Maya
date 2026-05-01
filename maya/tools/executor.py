@@ -8,10 +8,19 @@ from typing import Any
 import httpx
 
 from maya.agents.state import AgentState
+from maya.decision.broker import DecisionRequest, get_decision_broker
 from maya.llm.request_queue import request_queue
 from maya.telemetry.event_bus import Event, EventBus, EventType
 
 from .registry import get_tool, get_tool_schema, needs_agent_state, should_execute_in_sandbox
+
+_HIGH_RISK_TOOLS = {
+    "tamper_and_install",
+    "reflutter_patch_and_install",
+    "device_install_app",
+    "run_compliance_scan",
+    "run_compliance_check",
+}
 
 
 def _normalize_tool_result(tool_name: str, raw: Any, duration: float) -> str:
@@ -88,6 +97,21 @@ async def _execute_tool_in_sandbox(tool_name: str, args: dict[str, Any], agent_s
     auth_token = sandbox.get("auth_token")
 
     if not server_url or not auth_token:
+        if agent_state.sandbox_mode == "strict":
+            agent_state.record_tool_call(False)
+            await EventBus.instance().emit(
+                Event(
+                    type=EventType.SANDBOX_UNAVAILABLE,
+                    agent_id=agent_state.agent_id,
+                    agent_name=agent_state.agent_name,
+                    data={"tool": tool_name, "reason": "sandbox not initialized"},
+                )
+            )
+            return {
+                "error": "sandbox unavailable in strict mode; remote tool execution required",
+                "tool": tool_name,
+                "hint": "verify docker runtime and tool_server health",
+            }
         return await _execute_tool_locally(tool_name, args, agent_state)
 
     timeout_s = int(os.environ.get("MAYA_SANDBOX_TIMEOUT", "120")) + 30
@@ -101,17 +125,40 @@ async def _execute_tool_in_sandbox(tool_name: str, args: dict[str, Any], agent_s
         "Content-Type": "application/json",
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=timeout_s) as client:
-            response = await client.post(f"{server_url}/execute", json=payload, headers=headers)
-            response.raise_for_status()
-            body = response.json()
-    except Exception as exc:  # noqa: BLE001
+    body: dict[str, Any] | None = None
+    for attempt in range(1, 3):
+        try:
+            async with httpx.AsyncClient(timeout=timeout_s) as client:
+                response = await client.post(f"{server_url}/execute", json=payload, headers=headers)
+                response.raise_for_status()
+                body = response.json()
+            break
+        except Exception as exc:  # noqa: BLE001
+            if attempt == 2:
+                agent_state.record_tool_call(False)
+                await EventBus.instance().emit(
+                    Event(
+                        type=EventType.SANDBOX_UNAVAILABLE,
+                        agent_id=agent_state.agent_id,
+                        agent_name=agent_state.agent_name,
+                        data={"tool": tool_name, "reason": str(exc)[:200], "server_url": server_url},
+                    )
+                )
+                if agent_state.sandbox_mode == "strict":
+                    return {
+                        "error": f"sandbox execution failed in strict mode: {exc}",
+                        "tool": tool_name,
+                        "hint": "retry after sandbox recovery; local fallback disabled",
+                    }
+                return {
+                    "error": f"sandbox execution failed: {exc}",
+                    "tool": tool_name,
+                }
+            await asyncio.sleep(1.0)
+
+    if not body:
         agent_state.record_tool_call(False)
-        return {
-            "error": f"sandbox execution failed: {exc}",
-            "tool": tool_name,
-        }
+        return {"error": "sandbox execution returned empty response", "tool": tool_name}
 
     if body.get("error"):
         agent_state.record_tool_call(False)
@@ -147,6 +194,27 @@ async def execute_tool(tool_name: str, args: dict[str, Any], agent_state: AgentS
     )
 
     await request_queue.throttle(tool_name)
+
+    if tool_name in _HIGH_RISK_TOOLS:
+        decision = await get_decision_broker().request(
+            DecisionRequest(
+                prompt=f"High-risk action requested: {tool_name}. How should Maya proceed?",
+                options=["Proceed", "Gather More Evidence", "Skip"],
+                safe_default="Gather More Evidence",
+                timeout_seconds=agent_state.decision_timeout_seconds,
+                context={"tool_name": tool_name, "args": args},
+            ),
+            agent_state=agent_state,
+        )
+        if decision.selected_option != "Proceed":
+            return {
+                "status": "decision_blocked",
+                "tool": tool_name,
+                "decision": decision.selected_option,
+                "source": decision.source,
+                "note": decision.note,
+                "summary": f"Execution blocked by decision gate: {decision.selected_option}",
+            }
 
     t0 = monotonic()
     if should_execute_in_sandbox(tool_name):

@@ -29,6 +29,7 @@ class AgentGraph:
         self._agent_messages: dict[str, list[dict[str, str]]] = {}
         self._agent_states: dict[str, AgentState] = {}
         self._agent_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._max_agents = 7
         self._lock = asyncio.Lock()
 
     @classmethod
@@ -59,6 +60,10 @@ class AgentGraph:
                         "type": "delegation",
                     }
                 )
+
+    async def set_max_agents(self, limit: int) -> None:
+        async with self._lock:
+            self._max_agents = max(1, int(limit))
 
     async def update_status(self, agent_id: str, status: AgentStatus) -> None:
         async with self._lock:
@@ -110,6 +115,14 @@ class AgentGraph:
     ) -> dict[str, Any]:
         from .base_agent import get_registered_agent_class
 
+        async with self._lock:
+            running = sum(1 for n in self.nodes.values() if n.status in {AgentStatus.RUNNING, AgentStatus.WAITING})
+            if running >= self._max_agents:
+                return {
+                    "status": "error",
+                    "message": f"max_agents limit reached ({self._max_agents})",
+                }
+
         cls = get_registered_agent_class(agent_class_name)
         if cls is None:
             return {"status": "error", "message": f"unknown agent class: {agent_class_name}"}
@@ -123,6 +136,10 @@ class AgentGraph:
             target_app=parent_state.target_app,
             device_id=parent_state.connected_device,
             platform=parent_state.device_platform,
+            sandbox_mode=parent_state.sandbox_mode,
+            decision_timeout_seconds=parent_state.decision_timeout_seconds,
+            decision_mode=parent_state.decision_mode,
+            scan_time_budget_minutes=parent_state.scan_time_budget_minutes,
         )
 
         await child_agent.initialize()

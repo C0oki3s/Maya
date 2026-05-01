@@ -33,6 +33,7 @@ class DockerRuntime(Runtime):
         local_sources: list[str] | None = None,
         host_gateway: str = "host.docker.internal",
     ) -> SandboxInfo:
+        tool_server_host = "0.0.0.0"  # noqa: S104
         if self._client is None:
             # Dry-run fallback for environments without Docker.
             return SandboxInfo(
@@ -52,6 +53,16 @@ class DockerRuntime(Runtime):
             container = self._client.containers.run(
                 self.image,
                 detach=True,
+                command=[
+                    "python",
+                    "-m",
+                    "uvicorn",
+                    "maya.runtime.tool_server:app",
+                    "--host",
+                    tool_server_host,
+                    "--port",
+                    "8000",
+                ],
                 environment={
                     "SANDBOX_AUTH_TOKEN": auth_token,
                     "ADB_SERVER_SOCKET": f"tcp:{host_gateway}:5037",
@@ -65,6 +76,7 @@ class DockerRuntime(Runtime):
                 security_opt=["seccomp=unconfined"],
                 mem_limit="4g",
                 nano_cpus=2_000_000_000,
+                working_dir="/app",
             )
         except Exception:
             return SandboxInfo(

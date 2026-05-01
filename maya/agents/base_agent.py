@@ -18,7 +18,7 @@ from maya.telemetry.event_bus import Event, EventBus, EventType
 from maya.tools.executor import _normalize_tool_result, process_tool_invocations
 
 from .graph import AgentGraph
-from .state import AgentState, AgentStatus
+from .state import AgentState, AgentStatus, LeadState
 
 _agent_registry: dict[str, type[BaseAgent]] = {}
 
@@ -47,6 +47,10 @@ class BaseAgent(ABC, metaclass=AgentMeta):
         device_id: str | None = None,
         platform: str | None = None,
         run_name: str = "default",
+        sandbox_mode: str = "strict",
+        decision_timeout_seconds: int = 30,
+        decision_mode: str = "human_or_auto",
+        scan_time_budget_minutes: float = 60.0,
     ) -> None:
         self.state = AgentState(
             agent_name=name,
@@ -57,6 +61,10 @@ class BaseAgent(ABC, metaclass=AgentMeta):
             target_app=target_app,
             connected_device=device_id,
             device_platform=platform,
+            sandbox_mode=sandbox_mode,
+            decision_timeout_seconds=decision_timeout_seconds,
+            decision_mode=decision_mode,
+            scan_time_budget_minutes=scan_time_budget_minutes,
         )
         self.llm = llm or LLMClient()
         self._stop_event = asyncio.Event()
@@ -102,6 +110,9 @@ class BaseAgent(ABC, metaclass=AgentMeta):
             "auth_token": sandbox.auth_token,
             "agent_id": sandbox.agent_id,
         }
+        if self.state.sandbox_mode == "strict" and not sandbox.server_url:
+            self.state.status = AgentStatus.FAILED
+            raise RuntimeError("strict sandbox mode requires an active tool_server but sandbox is unavailable")
 
         self.state.add_message("system", self.build_system_prompt())
         self.state.add_message("user", self.state.task)
@@ -155,6 +166,7 @@ class BaseAgent(ABC, metaclass=AgentMeta):
         return None
 
     async def _process_iteration(self) -> bool:
+        self._advance_loop_stage()
         self._emit(EventType.ITERATION_START, {"iteration": self.state.iteration_count})
 
         history = self._compressor.maybe_compress(self.state.get_conversation_history())
@@ -198,10 +210,79 @@ class BaseAgent(ABC, metaclass=AgentMeta):
                 )
                 return True
             tool_name = str(tool_calls[i].get("toolName", "unknown"))
+            self._ingest_observation(tool_name, result)
             formatted = _normalize_tool_result(tool_name, result, 0.0)
             self.state.add_message("user", formatted)
+            if isinstance(result, dict) and "sandbox execution failed" in str(result.get("error", "")).lower():
+                self.state.add_message(
+                    "user",
+                    "<reflection>Sandbox became unavailable. Re-plan by retrying after runtime recovery "
+                    "or continue with host-safe/non-sandbox tools only when applicable.</reflection>",
+                )
         self._emit(EventType.ITERATION_END, {"iteration": self.state.iteration_count, "tool_calls": len(tool_calls)})
         return False
+
+    def _advance_loop_stage(self) -> None:
+        next_stage = self.state.recompute_loop_stage()
+        if self.state.set_loop_stage(next_stage):
+            self._emit(
+                EventType.LOOP_STAGE_CHANGED,
+                {
+                    "stage": self.state.loop_stage,
+                    "lead_count": len(self.state.leads),
+                },
+            )
+
+    def _ingest_observation(self, tool_name: str, result: Any) -> None:
+        if not isinstance(result, dict):
+            return
+        if result.get("error"):
+            return
+
+        if tool_name == "analyze_manifest":
+            components = result.get("components", {})
+            if isinstance(components, dict):
+                for comp_type, entries in components.items():
+                    if not isinstance(entries, list):
+                        continue
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        name = str(entry.get("name", "")).strip()
+                        exported = str(entry.get("exported", "")).strip().lower()
+                        if name and exported in {"true", "1"}:
+                            self.state.add_lead(
+                                title=f"Exported {comp_type}: {name}",
+                                source="manifest_exported_component",
+                                evidence=f"exported={exported}",
+                                metadata={"component_type": comp_type, "name": name},
+                            )
+
+        if tool_name == "report_api_endpoint":
+            endpoint = result.get("endpoint", {})
+            if isinstance(endpoint, dict):
+                method = str(endpoint.get("method", "GET"))
+                url = str(endpoint.get("url", "")).strip()
+                if url:
+                    self.state.add_lead(
+                        title=f"API endpoint {method} {url}",
+                        source="api_endpoint",
+                        evidence=str(endpoint)[:800],
+                    )
+
+        if (
+            tool_name in {"verify_ssl_bypass", "verify_frida_attached", "verify_proxy_active"}
+            and str(result.get("status", "")).lower() == "ok"
+        ):
+            self.state.mark_first_lead(LeadState.NEW, LeadState.VALIDATED)
+
+        if tool_name in {"tamper_and_install", "reflutter_patch_and_install"} and str(
+            result.get("status", "")
+        ).lower() == "ok":
+            self.state.mark_first_lead(LeadState.VALIDATED, LeadState.EXPLOITED)
+
+        if tool_name == "report_vulnerability" and str(result.get("status", "")).lower() in {"ok", "duplicate"}:
+            self.state.mark_first_lead(LeadState.EXPLOITED, LeadState.REPORTED)
 
     async def agent_loop(self) -> dict[str, Any]:
         while not self.state.should_terminate() and not self._stop_event.is_set():
@@ -255,6 +336,9 @@ class BaseAgent(ABC, metaclass=AgentMeta):
             "findings": self.state.findings,
             "api_endpoints": self.state.api_endpoints,
             "intercepted_traffic": self.state.intercepted_traffic,
+            "leads": self.state.leads,
+            "decision_history": self.state.decision_history,
+            "loop_stage": self.state.loop_stage,
             "iterations": self.state.iteration_count,
             "tool_calls": self.state.tool_call_count,
             "status": self.state.status.value,

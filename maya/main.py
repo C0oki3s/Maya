@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from dataclasses import asdict
@@ -10,8 +11,10 @@ from typing import Any
 import click
 
 from maya.agents.checkpointing import apply_checkpoint, load_latest_checkpoint
+from maya.agents.graph import AgentGraph
 from maya.agents.maya_agent import MayaAgent
 from maya.commands.apk_builder import build_apk as build_apk_command
+from maya.decision.broker import get_decision_broker
 from maya.llm import LLMClient, LLMConfig
 from maya.models import ScanConfig
 from maya.skills import list_available_skills_with_sources, set_cli_skills_dir
@@ -80,6 +83,15 @@ def _is_headless() -> bool:
 @click.option("--agent-skill", "agent_skills", multiple=True, hidden=True)
 @click.option("--list-skills", "list_skills_flag", is_flag=True, default=False, hidden=True)
 @click.option("--role", default="root", type=click.Choice(["root", "static", "dynamic", "api", "exploit"]), hidden=True)
+@click.option("--sandbox-mode", default="strict", type=click.Choice(["strict", "permissive"]), hidden=True)
+@click.option("--decision-timeout-seconds", default=30, type=int, hidden=True)
+@click.option(
+    "--decision-mode",
+    default="human_or_auto",
+    type=click.Choice(["human_or_auto", "auto_only"]),
+    hidden=True,
+)
+@click.option("--scan-time-budget-minutes", default=60.0, type=float, hidden=True)
 # ── APK Build options (hidden, activated with --build-apk) ─────
 @click.option("--build-apk", is_flag=True, default=False, hidden=True, help="Build and sign companion APK")
 @click.option("--apk-sign-mode", default="uber", type=click.Choice(["uber", "keystore"]), hidden=True)
@@ -109,6 +121,10 @@ def cli(
     agent_skills: tuple[str, ...],
     list_skills_flag: bool,
     role: str,
+    sandbox_mode: str,
+    decision_timeout_seconds: int,
+    decision_mode: str,
+    scan_time_budget_minutes: float,
     build_apk: bool,
     apk_sign_mode: str,
     apk_keystore: str | None,
@@ -187,6 +203,7 @@ def cli(
 
     async def _run() -> dict[str, Any]:
         set_cli_skills_dir(skills_dir)
+        await AgentGraph.instance().set_max_agents(max_agents)
 
         instruction_text = instruction
         if instruction_file:
@@ -204,6 +221,14 @@ def cli(
             max_agents=max_agents,
             skills_dir=skills_dir,
             resume=resume,
+            sandbox_mode=sandbox_mode,
+            decision_timeout_seconds=decision_timeout_seconds,
+            decision_mode=decision_mode,
+            scan_time_budget_minutes=scan_time_budget_minutes,
+        )
+        get_decision_broker().configure(
+            decision_mode=scan_config.decision_mode,
+            timeout_seconds=scan_config.decision_timeout_seconds,
         )
 
         config = LLMConfig.load().apply_overrides(
@@ -238,6 +263,10 @@ def cli(
             platform=platform,
             role=role,
             run_name=run_name,
+            sandbox_mode=scan_config.sandbox_mode,
+            decision_timeout_seconds=scan_config.decision_timeout_seconds,
+            decision_mode=scan_config.decision_mode,
+            scan_time_budget_minutes=scan_config.scan_time_budget_minutes,
         )
 
         if resume:
@@ -253,6 +282,16 @@ def cli(
     run_dir.mkdir(parents=True, exist_ok=True)
     bus = EventBus.instance()
     bus.set_log_path(run_dir / "events.jsonl")
+
+    def _persist_extended_artifacts(result: dict[str, Any], target_dir: Path) -> None:
+        (target_dir / "decision_history.json").write_text(
+            json.dumps(result.get("decision_history", []), indent=2, default=str),
+            encoding="utf-8",
+        )
+        (target_dir / "leads.json").write_text(
+            json.dumps(result.get("leads", []), indent=2, default=str),
+            encoding="utf-8",
+        )
 
     if non_interactive:
         # ── Headless mode: print live progress to stderr ────
@@ -322,6 +361,7 @@ def cli(
             tracer.record_api_endpoint(ep)
         tracer.log("scan_result", {"status": result.get("status"), "iterations": result.get("iterations")})
         tracer.persist()
+        _persist_extended_artifacts(result, run_dir)
 
         print(f"\n{'=' * 60}", file=sys.stderr, flush=True)
         print("  Maya scan complete", file=sys.stderr, flush=True)
@@ -342,6 +382,10 @@ def cli(
             "platform": platform or "auto",
             "model": model or os.environ.get("MAYA_LLM", "—"),
             "scan_mode": scan_mode or "comprehensive",
+            "sandbox_mode": sandbox_mode,
+            "decision_mode": decision_mode,
+            "decision_timeout_seconds": decision_timeout_seconds,
+            "scan_time_budget_minutes": scan_time_budget_minutes,
         }
 
         _agent_ref: dict[str, Any] = {}
@@ -376,9 +420,11 @@ def cli(
                 tracer.record_api_endpoint(ep)
             tracer.log("scan_result", {"status": result.get("status"), "iterations": result.get("iterations")})
             tracer.persist()
+            _persist_extended_artifacts(result, run_dir)
 
         async def _build_and_run_agent() -> dict[str, Any]:
             set_cli_skills_dir(skills_dir)
+            await AgentGraph.instance().set_max_agents(max_agents)
             instruction_text = instruction
             if instruction_file:
                 instruction_text = Path(instruction_file).read_text(encoding="utf-8")
@@ -395,6 +441,14 @@ def cli(
                 max_agents=max_agents,
                 skills_dir=skills_dir,
                 resume=resume,
+                sandbox_mode=sandbox_mode,
+                decision_timeout_seconds=decision_timeout_seconds,
+                decision_mode=decision_mode,
+                scan_time_budget_minutes=scan_time_budget_minutes,
+            )
+            get_decision_broker().configure(
+                decision_mode=scan_config.decision_mode,
+                timeout_seconds=scan_config.decision_timeout_seconds,
             )
 
             config = LLMConfig.load().apply_overrides(
@@ -425,6 +479,10 @@ def cli(
                 platform=platform,
                 role=role,
                 run_name=run_name,
+                sandbox_mode=scan_config.sandbox_mode,
+                decision_timeout_seconds=scan_config.decision_timeout_seconds,
+                decision_mode=scan_config.decision_mode,
+                scan_time_budget_minutes=scan_config.scan_time_budget_minutes,
             )
             _agent_ref["agent"] = agent
 
