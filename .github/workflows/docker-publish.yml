@@ -19,6 +19,7 @@ env:
 permissions:
   contents: read
   packages: write
+  id-token: write
 
 jobs:
   build-and-push:
@@ -62,17 +63,15 @@ jobs:
         id: build
         uses: docker/build-push-action@v7
         with:
-          context: .
-          file: containers/Dockerfile.sandbox
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64
-          registry: ${{ env.REGISTRY }}
-          registry-username: ${{ github.actor }}
-          registry-password: ${{ secrets.GITHUB_TOKEN }}
+         context: .
+         file: containers/Dockerfile.sandbox
+         push: ${{ github.event_name != 'pull_request' }}
+         tags: ${{ steps.meta.outputs.tags }}
+         labels: ${{ steps.meta.outputs.labels }}
+         cache-from: type=gha
+         cache-to: type=gha,mode=max
+         platforms: linux/amd64
+         provenance: false
 
       - name: Pull pushed image for SBOM scan
         if: github.event_name != 'pull_request'
