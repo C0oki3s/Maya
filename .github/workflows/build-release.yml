@@ -3,12 +3,12 @@ name: Build & Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: maya-agent
+  IMAGE_NAME: maya
 
 permissions:
   contents: write
