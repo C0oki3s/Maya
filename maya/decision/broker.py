@@ -96,9 +96,7 @@ class DecisionBroker:
             "</decision>",
         )
 
-        event_type = (
-            EventType.DECISION_AUTO_DEFAULTED if response.source == "auto" else EventType.DECISION_ANSWERED
-        )
+        event_type = EventType.DECISION_AUTO_DEFAULTED if response.source == "auto" else EventType.DECISION_ANSWERED
         await EventBus.instance().emit(
             Event(
                 type=event_type,

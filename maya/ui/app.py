@@ -1044,8 +1044,7 @@ class MayaUI(App):
             log.write(f"[{c}]sandbox unavailable[/] [{ON_SURF_DIM}]{str(d.get('reason', ''))[:140]}[/]")
         elif et == EventType.LOOP_STAGE_CHANGED:
             log.write(
-                f"[{c}]stage[/] [{ON_SURF}]{d.get('stage', '?')}[/] "
-                f"[{ON_SURF_DIM}]leads={d.get('lead_count', 0)}[/]"
+                f"[{c}]stage[/] [{ON_SURF}]{d.get('stage', '?')}[/] [{ON_SURF_DIM}]leads={d.get('lead_count', 0)}[/]"
             )
         elif et == EventType.FINDING_ADDED:
             sev = d.get("severity", "info")
@@ -1293,4 +1292,3 @@ class MayaUI(App):
             self._stage,
             ("Flow recovery: continue scan â€” enumerate surfaces, validate top-risk hypotheses, checkpoint progress."),
         )
-

@@ -276,9 +276,10 @@ class BaseAgent(ABC, metaclass=AgentMeta):
         ):
             self.state.mark_first_lead(LeadState.NEW, LeadState.VALIDATED)
 
-        if tool_name in {"tamper_and_install", "reflutter_patch_and_install"} and str(
-            result.get("status", "")
-        ).lower() == "ok":
+        if (
+            tool_name in {"tamper_and_install", "reflutter_patch_and_install"}
+            and str(result.get("status", "")).lower() == "ok"
+        ):
             self.state.mark_first_lead(LeadState.VALIDATED, LeadState.EXPLOITED)
 
         if tool_name == "report_vulnerability" and str(result.get("status", "")).lower() in {"ok", "duplicate"}:
