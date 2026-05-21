@@ -71,6 +71,6 @@ jobs:
           context: .
           file: containers/Dockerfile.sandbox
           push: false
-          tags: maya-agent:test
+          tags: maya:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
